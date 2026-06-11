@@ -423,6 +423,51 @@ if err != nil {
 os.WriteFile("output.avif", buf, 0644)
 ```
 
+### 15. Stream images with io.Reader and io.Writer
+
+Load directly from any `io.Reader` (HTTP body, S3 stream, file handle) and save directly to any `io.Writer` — without buffering the full compressed input or output in Go memory. If the reader also implements `io.Seeker` (like `os.File`), libvips uses random access for efficient loading of formats like HEIF.
+
+```go
+// Stream-load: no full-file buffer in Go memory
+f, err := os.Open("input.heic")
+if err != nil {
+	log.Fatal(err)
+}
+defer f.Close()
+
+image, err := vips.LoadImageFromReader(f, nil)
+if err != nil {
+	log.Fatal(err)
+}
+defer image.Close()
+
+// Process as usual
+if err := image.AutoRotate(); err != nil {
+	log.Fatal(err)
+}
+
+// Stream-save: encoded chunks written directly to the output
+out, err := os.Create("output.jpg")
+if err != nil {
+	log.Fatal(err)
+}
+defer out.Close()
+
+err = image.SaveToWriter(out, vips.ImageTypeJPEG, &vips.ExportParams{
+	Quality: 85,
+})
+if err != nil {
+	log.Fatal(err)
+}
+```
+
+For non-seekable readers (e.g. `http.Request.Body`), libvips buffers header data up to ~1 GB by default. Lower the limit to bound memory usage:
+
+```go
+vips.Startup(nil)
+vips.SetPipeReadLimit(100 * 1024 * 1024) // 100 MB
+```
+
 See the _examples/_ folder for more.
 
 ## Running tests
