@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -129,6 +130,29 @@ func TestStreamRegistry_StaleHandleReturnsError(t *testing.T) {
 	assert.EqualValues(t, -1, sourceSeek(sh, 0, io.SeekStart))
 	assert.EqualValues(t, -1, targetWrite(th, buf))
 	assert.EqualValues(t, -1, targetEnd(th))
+}
+
+func TestStreamRegistry_HandleWraparound(t *testing.T) {
+	streamCallbacks.Lock()
+	saved := streamCallbacks.nextHandle
+	streamCallbacks.nextHandle = math.MaxInt32 - 1
+	streamCallbacks.Unlock()
+	defer func() {
+		streamCallbacks.Lock()
+		streamCallbacks.nextHandle = saved
+		streamCallbacks.Unlock()
+	}()
+
+	h1, _ := registerSource(bytes.NewReader(nil))
+	h2, _ := registerSource(bytes.NewReader(nil))
+	defer deregisterSource(h1)
+	defer deregisterSource(h2)
+
+	assert.Equal(t, math.MaxInt32, h1, "handle must stay within int32 range")
+	assert.Less(t, h2, 10, "next handle must wrap to the start of the range")
+	assert.NotEqual(t, h1, h2)
+	assert.NotNil(t, lookupSource(h1))
+	assert.NotNil(t, lookupSource(h2))
 }
 
 func TestStreamRegistry_SeekWithoutSeeker(t *testing.T) {

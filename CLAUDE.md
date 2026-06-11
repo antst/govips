@@ -20,7 +20,7 @@ Requires libvips-dev installed (`brew install vips` on macOS, `apt-get install l
 ## Dev Flow
 
 Flow: worktree
-- All code changes happen in worktrees, never on main
+- All code changes happen in worktrees, never on master
 - Use /dev to start work (creates worktree automatically)
 - Use /stage to wrap up (prepares clean commit for landing)
 - Review and land via wtr (ff-only merge)

@@ -120,7 +120,7 @@ int save_gif_to_target(SaveParams *params, VipsTargetCustom *target);
 
 **Callback Flow** (read example):
 
-```
+```text
 libvips worker thread
   → C trampoline source_read_handler(source, buf, len, user_data)
     → extract handle from user_data (GPOINTER_TO_INT)
@@ -134,7 +134,7 @@ libvips worker thread
 
 **Error Propagation**:
 
-```
+```text
 Go reader returns error
   → stored in entry.lastErr
   → trampoline returns -1

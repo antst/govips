@@ -14,6 +14,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"runtime"
 	"sync"
 	"unsafe"
@@ -57,9 +58,30 @@ var streamCallbacks = struct {
 	targets    map[int]*targetEntry
 	nextHandle int
 }{
-	sources:    make(map[int]*sourceEntry),
-	targets:    make(map[int]*targetEntry),
-	nextHandle: 1,
+	sources: make(map[int]*sourceEntry),
+	targets: make(map[int]*targetEntry),
+}
+
+// allocStreamHandle returns the next free handle. Handles cross the CGo
+// boundary as C int (via GLib's GINT_TO_POINTER), so they must stay
+// within int32 range: wrap instead of overflowing, and skip any handle
+// that is still registered after a wrap. The caller must hold the
+// streamCallbacks lock.
+func allocStreamHandle() int {
+	for {
+		streamCallbacks.nextHandle++
+		if streamCallbacks.nextHandle > math.MaxInt32 {
+			streamCallbacks.nextHandle = 1
+		}
+		h := streamCallbacks.nextHandle
+		if _, live := streamCallbacks.sources[h]; live {
+			continue
+		}
+		if _, live := streamCallbacks.targets[h]; live {
+			continue
+		}
+		return h
+	}
 }
 
 func registerSource(r io.Reader) (int, *sourceEntry) {
@@ -70,8 +92,7 @@ func registerSource(r io.Reader) (int, *sourceEntry) {
 
 	streamCallbacks.Lock()
 	defer streamCallbacks.Unlock()
-	handle := streamCallbacks.nextHandle
-	streamCallbacks.nextHandle++
+	handle := allocStreamHandle()
 	streamCallbacks.sources[handle] = entry
 	return handle, entry
 }
@@ -93,8 +114,7 @@ func registerTarget(w io.Writer) (int, *targetEntry) {
 
 	streamCallbacks.Lock()
 	defer streamCallbacks.Unlock()
-	handle := streamCallbacks.nextHandle
-	streamCallbacks.nextHandle++
+	handle := allocStreamHandle()
 	streamCallbacks.targets[handle] = entry
 	return handle, entry
 }
@@ -336,8 +356,7 @@ func (r *ImageRef) SaveToWriter(w io.Writer, format ImageType, params *ExportPar
 		code = C.save_webp_to_target(&saveParams, target)
 	case ImageTypeHEIF:
 		code = C.save_heif_to_target(&saveParams, target)
-	case ImageTypeTIFF:
-		code = C.save_tiff_to_target(&saveParams, target)
+	// ImageTypeTIFF is handled by the buffer-path early return above.
 	case ImageTypeGIF:
 		code = C.save_gif_to_target(&saveParams, target)
 	}

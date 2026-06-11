@@ -425,7 +425,7 @@ os.WriteFile("output.avif", buf, 0644)
 
 ### 15. Stream images with io.Reader and io.Writer
 
-Load directly from any `io.Reader` (HTTP body, S3 stream, file handle) and save directly to any `io.Writer` — without buffering the full compressed input or output in Go memory. If the reader also implements `io.Seeker` (like `os.File`), libvips uses random access for efficient loading of formats like HEIF.
+Load directly from any `io.Reader` (HTTP body, S3 stream, file handle) and save directly to any `io.Writer` — without buffering the full compressed input or output in Go memory. If the reader also implements `io.Seeker` (like `os.File`), libvips uses random access for efficient loading of formats like HEIF. One exception on the save side: TIFF requires seekable output, so it is encoded in memory and written to `w` in a single chunk (bytes identical to `ExportTiff`).
 
 ```go
 // Stream-load: no full-file buffer in Go memory

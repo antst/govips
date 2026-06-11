@@ -57,9 +57,10 @@ func main() {
 ## End-to-End Streaming Pipeline
 
 ```go
+// convertHEICtoJPEG assumes vips.Startup was called once at process
+// start (with a matching vips.Shutdown at exit); libvips global state
+// must not be initialized per request.
 func convertHEICtoJPEG(input io.Reader, output io.Writer) error {
-    vips.Startup(nil)
-
     // Stream-load (reader is released after decode)
     image, err := vips.LoadImageFromReader(input, nil)
     if err != nil {

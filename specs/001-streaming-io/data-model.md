@@ -50,7 +50,7 @@ are separate locks to avoid holding the global lock during I/O.
 
 ### Source Entry
 
-```
+```text
 (none) → Registered → Active (callbacks being invoked) → Deregistered
 ```
 
@@ -64,7 +64,7 @@ are separate locks to avoid holding the global lock during I/O.
 
 ### Target Entry
 
-```
+```text
 (none) → Registered → Active → Ending → Deregistered
 ```
 
