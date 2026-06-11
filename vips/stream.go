@@ -15,7 +15,10 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"os"
 	"runtime"
+	"strconv"
+	"strings"
 	"sync"
 	"unsafe"
 )
@@ -237,16 +240,169 @@ func targetEnd(handle int) int {
 	return 0
 }
 
+// streamSourceRef ties a live VipsSourceCustom (and its registry entry)
+// to a sequentially stream-loaded ImageRef. The image pulls pixels from
+// the source on demand, so both stay alive until the image is closed or
+// materialized.
+type streamSourceRef struct {
+	handle int
+	entry  *sourceEntry
+	source *C.VipsSourceCustom
+}
+
+func (s *streamSourceRef) release() {
+	C.clear_source(&s.source)
+	deregisterSource(s.handle)
+}
+
+// streamMaterialize holds the knobs for the default (random-access)
+// load path: decoded images at most threshold bytes are materialized in
+// memory, larger ones in a scratch file on disc.
+var streamMaterialize = struct {
+	sync.RWMutex
+	scratchDir string // "" → os.TempDir()
+	threshold  int64  // <0 → resolve from VIPS_DISC_THRESHOLD / default
+}{threshold: -1}
+
+// defaultDiscThreshold mirrors the libvips default for
+// VIPS_DISC_THRESHOLD: decoded images above 100 MB go to disc.
+const defaultDiscThreshold = 100 << 20
+
+// SetStreamScratchDir sets the directory used for scratch files when a
+// stream-loaded image is materialized to disc (see
+// SetStreamDiscThreshold). An empty string restores the default
+// (os.TempDir()). Scratch files are unlinked as soon as they are opened;
+// they never outlive the ImageRef even on crash.
+func SetStreamScratchDir(dir string) {
+	streamMaterialize.Lock()
+	defer streamMaterialize.Unlock()
+	streamMaterialize.scratchDir = dir
+}
+
+// SetStreamDiscThreshold sets the decoded-size threshold (in bytes)
+// above which LoadImageFromReader materializes images to a scratch file
+// on disc instead of memory. Zero sends every image to disc. A negative
+// value restores the default: the VIPS_DISC_THRESHOLD environment
+// variable (number with optional k/m/g suffix) or 100 MB.
+func SetStreamDiscThreshold(bytes int64) {
+	streamMaterialize.Lock()
+	defer streamMaterialize.Unlock()
+	streamMaterialize.threshold = bytes
+}
+
+func streamDiscThresholdBytes() int64 {
+	streamMaterialize.RLock()
+	t := streamMaterialize.threshold
+	streamMaterialize.RUnlock()
+	if t >= 0 {
+		return t
+	}
+	if env := os.Getenv("VIPS_DISC_THRESHOLD"); env != "" {
+		if v, ok := parseVipsSize(env); ok {
+			return v
+		}
+	}
+	return defaultDiscThreshold
+}
+
+func streamScratchDir() string {
+	streamMaterialize.RLock()
+	defer streamMaterialize.RUnlock()
+	if streamMaterialize.scratchDir != "" {
+		return streamMaterialize.scratchDir
+	}
+	return os.TempDir()
+}
+
+// parseVipsSize parses libvips-style size strings: a number with an
+// optional k/m/g suffix (powers of 1024).
+func parseVipsSize(s string) (int64, bool) {
+	s = strings.TrimSpace(strings.ToLower(s))
+	mult := int64(1)
+	switch {
+	case strings.HasSuffix(s, "k"):
+		mult, s = 1<<10, s[:len(s)-1]
+	case strings.HasSuffix(s, "m"):
+		mult, s = 1<<20, s[:len(s)-1]
+	case strings.HasSuffix(s, "g"):
+		mult, s = 1<<30, s[:len(s)-1]
+	}
+	v, err := strconv.ParseFloat(strings.TrimSpace(s), 64)
+	if err != nil || v < 0 {
+		return 0, false
+	}
+	return int64(v * float64(mult)), true
+}
+
+// materializeImage renders the lazy image in to either memory or a
+// scratch file on disc, depending on its decoded size and the configured
+// threshold. The returned image no longer reads from the source.
+func materializeImage(in *C.VipsImage) (*C.VipsImage, error) {
+	decoded := int64(C.image_decoded_size(in))
+
+	if decoded <= streamDiscThresholdBytes() {
+		var out *C.VipsImage
+		if C.copy_image_to_memory(in, &out) != 0 {
+			return nil, handleVipsError()
+		}
+		return out, nil
+	}
+
+	f, err := os.CreateTemp(streamScratchDir(), "govips-scratch-*.v")
+	if err != nil {
+		return nil, fmt.Errorf("streaming load: create scratch file: %w", err)
+	}
+	path := f.Name()
+	_ = f.Close()
+
+	cPath := C.CString(path)
+	defer C.free(unsafe.Pointer(cPath))
+
+	var out *C.VipsImage
+	code := C.write_image_to_disc(in, cPath, &out)
+	// Unlink immediately: the open file keeps the data alive until the
+	// image is closed, and the path never leaks even on crash.
+	_ = os.Remove(path)
+	if code != 0 {
+		return nil, handleVipsError()
+	}
+	return out, nil
+}
+
+// sequentialAccess reports whether params request sequential streaming.
+func sequentialAccess(params *ImportParams) bool {
+	if !params.Access.IsSet() {
+		return false
+	}
+	a := params.Access.Get()
+	return a == AccessSequential || a == AccessSequentialUnbuffered
+}
+
 // LoadImageFromReader loads an image from the given io.Reader using
 // libvips streaming (VipsSourceCustom). If r also implements io.Seeker,
 // seek is exposed to libvips for efficient random-access loading.
 // Otherwise libvips uses sequential mode with automatic header buffering
 // (see SetPipeReadLimit).
 //
-// The reader is consumed during this call and is not retained after
-// LoadImageFromReader returns. Callers may close their reader immediately
-// after this function returns. The returned ImageRef has no buffer
-// backing: the compressed input is never held in Go memory.
+// By default the image is fully materialized before this function
+// returns — in memory when its decoded size is at most the disc
+// threshold, otherwise in an unlinked scratch file (see
+// SetStreamDiscThreshold and SetStreamScratchDir). The reader is
+// consumed during this call and is not retained; callers may close it
+// immediately. Decode errors (including truncated input) surface here.
+//
+// If params.Access is AccessSequential, the image is instead loaded
+// lazily: libvips pulls compressed bytes from r on demand while later
+// operations consume pixels, so peak memory stays bounded by libvips
+// line caches regardless of image size. The reader MUST stay open until
+// the ImageRef is closed (Close releases it). Only operations that read
+// pixels strictly top-to-bottom are valid on such images — see the
+// "Streaming" section of the README. Decode errors surface from the
+// operation that first consumes the pixels (typically SaveToWriter or
+// Export*), not from this function.
+//
+// In every mode the returned ImageRef has no buffer backing: the full
+// compressed input is never held in Go memory.
 //
 // params may be nil for default import settings.
 func LoadImageFromReader(r io.Reader, params *ImportParams) (*ImageRef, error) {
@@ -263,27 +419,78 @@ func LoadImageFromReader(r io.Reader, params *ImportParams) (*ImageRef, error) {
 	incOpCounter("load_source")
 
 	handle, entry := registerSource(r)
-	defer deregisterSource(handle)
 
 	source := C.create_source_custom(C.int(handle), C.int(boolToInt(entry.seeker != nil)))
 	if source == nil {
+		deregisterSource(handle)
 		return nil, handleVipsError()
 	}
-	// The source is released here, immediately after decode, so upstream
-	// resources (file handles, HTTP connections) are freed early.
-	defer C.clear_source(&source)
 
 	loadParams := createImportParams(ImageTypeUnknown, params)
 
 	if code := C.load_from_source(source, &loadParams); code != 0 {
-		return nil, wrapStreamError("streaming load", handleImageError(loadParams.outputImage), entry.takeErr())
+		err := wrapStreamError("streaming load", handleImageError(loadParams.outputImage), entry.takeErr())
+		C.clear_source(&source)
+		deregisterSource(handle)
+		return nil, err
 	}
 
+	lazy := loadParams.outputImage
 	format := ImageType(loadParams.inputFormat)
-	ref := newImageRef(loadParams.outputImage, format, format, nil)
 
+	if sequentialAccess(params) {
+		ref := newImageRef(lazy, format, format, nil)
+		ref.streamSource = &streamSourceRef{handle: handle, entry: entry, source: source}
+		govipsLog("govips", LogLevelDebug, fmt.Sprintf("created sequential imageRef %p from reader", ref))
+		return ref, nil
+	}
+
+	// Default path: materialize now so the source (and the caller's
+	// reader) can be released before returning. Upstream resources
+	// (file handles, HTTP connections) are freed early.
+	out, err := materializeImage(lazy)
+	clearImage(lazy)
+	C.clear_source(&source)
+	deregisterSource(handle)
+	if err != nil {
+		return nil, wrapStreamError("streaming load", err, entry.takeErr())
+	}
+
+	ref := newImageRef(out, format, format, nil)
 	govipsLog("govips", LogLevelDebug, fmt.Sprintf("created imageRef %p from reader", ref))
 	return ref, nil
+}
+
+// materialize converts a sequentially stream-loaded image into a
+// materialized one (memory or scratch disc, by threshold) and releases
+// its source, making random-access operations valid. It is a no-op for
+// images that are already materialized.
+func (r *ImageRef) materialize() error {
+	r.lock.Lock()
+
+	if r.image == nil {
+		r.lock.Unlock()
+		return errors.New("attempt to materialize a closed ImageRef")
+	}
+	src := r.streamSource
+	if src == nil {
+		r.lock.Unlock()
+		return nil
+	}
+
+	out, err := materializeImage(r.image)
+	if err != nil {
+		r.lock.Unlock()
+		return wrapStreamError("streaming load", err, src.entry.takeErr())
+	}
+
+	clearImage(r.image)
+	r.image = out
+	r.streamSource = nil
+	r.lock.Unlock()
+
+	src.release()
+	return nil
 }
 
 // SaveToWriter encodes the image in the specified format and writes the
@@ -362,7 +569,13 @@ func (r *ImageRef) SaveToWriter(w io.Writer, format ImageType, params *ExportPar
 	}
 
 	if code != 0 {
-		return wrapStreamError("streaming save", handleVipsError(), entry.takeErr())
+		ioErr := entry.takeErr()
+		if ioErr == nil && r.streamSource != nil {
+			// For sequentially stream-loaded images the decode runs
+			// during this save; surface the reader's error too.
+			ioErr = r.streamSource.entry.takeErr()
+		}
+		return wrapStreamError("streaming save", handleVipsError(), ioErr)
 	}
 	if ioErr := entry.takeErr(); ioErr != nil {
 		return fmt.Errorf("streaming save: writer error: %w", ioErr)

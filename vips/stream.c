@@ -174,30 +174,54 @@ int load_from_source(VipsSourceCustom *source, LoadParams *params) {
                     VIPS_FAIL_ON_TRUNCATED, NULL);
   }
 
-  if (vips_cache_operation_buildp(&operation)) {
+  // Build uncached: the cache key includes the unique source object, so
+  // a hit is impossible — caching would only pin the source and the
+  // lazy image in the operation cache past their natural lifetime.
+  if (vips_object_build(VIPS_OBJECT(operation))) {
     vips_object_unref_outputs(VIPS_OBJECT(operation));
     g_object_unref(operation);
     return 1;
   }
 
-  VipsImage *out = NULL;
-  g_object_get(VIPS_OBJECT(operation), "out", &out, NULL);
+  g_object_get(VIPS_OBJECT(operation), "out", &params->outputImage, NULL);
 
   vips_object_unref_outputs(VIPS_OBJECT(operation));
   g_object_unref(operation);
 
-  // libvips decodes lazily, but the caller releases the source (and its
-  // Go reader) immediately after this function returns. Force the full
-  // decode now, while the source is still connected, so the image never
-  // reads from the source again and truncated/erroring streams fail here
-  // rather than producing corrupt pixels later.
-  VipsImage *memory = vips_image_copy_memory(out);
-  g_object_unref(out);
+  // The returned image is LAZY: libvips decodes on demand, pulling from
+  // the source during later operations. The Go side decides whether to
+  // materialize it now (memory or scratch disc, releasing the source
+  // early) or keep the source connected for sequential streaming.
+  return 0;
+}
+
+gint64 image_decoded_size(VipsImage *in) {
+  return (gint64)VIPS_IMAGE_SIZEOF_PEL(in) * in->Xsize * in->Ysize;
+}
+
+int copy_image_to_memory(VipsImage *in, VipsImage **out) {
+  VipsImage *memory = vips_image_copy_memory(in);
   if (!memory) {
     return 1;
   }
+  *out = memory;
+  return 0;
+}
 
-  params->outputImage = memory;
+int write_image_to_disc(VipsImage *in, const char *path, VipsImage **out) {
+  // Render the full image to a vips-native (.v) scratch file in one
+  // sequential pass, then reopen it as a random-access image backed by
+  // the file. Decode/reader errors surface here, during the write pass.
+  if (vips_image_write_to_file(in, path, NULL)) {
+    return 1;
+  }
+
+  VipsImage *disc =
+      vips_image_new_from_file(path, "access", VIPS_ACCESS_RANDOM, NULL);
+  if (!disc) {
+    return 1;
+  }
+  *out = disc;
   return 0;
 }
 
@@ -222,7 +246,9 @@ static int save_target(const char *operationName, SaveParams *params,
     return 1;
   }
 
-  if (vips_cache_operation_buildp(&operation)) {
+  // Build uncached, mirroring load_from_source: the unique target
+  // object makes cache hits impossible.
+  if (vips_object_build(VIPS_OBJECT(operation))) {
     vips_object_unref_outputs(VIPS_OBJECT(operation));
     g_object_unref(operation);
     return 1;

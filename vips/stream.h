@@ -42,9 +42,26 @@ VipsTargetCustom *create_target_custom(int handle);
 // Detects the image format by sniffing the source, then loads it.
 // Borrows source (does not take ownership). On success returns 0, sets
 // params->inputFormat to the detected format, and stores a new VipsImage
-// reference in params->outputImage owned by the caller. On failure
-// returns non-zero with the error in the vips error buffer.
+// reference in params->outputImage owned by the caller. The image is
+// LAZY: it pulls from the source on demand until materialized, so the
+// source must stay alive (and registered) until the image is either
+// materialized or closed. On failure returns non-zero with the error in
+// the vips error buffer.
 int load_from_source(VipsSourceCustom *source, LoadParams *params);
+
+// Returns the decoded (uncompressed) pixel size of in, in bytes.
+gint64 image_decoded_size(VipsImage *in);
+
+// Renders in into a memory image. Borrows in; on success stores a new
+// reference in *out owned by the caller. Returns non-zero on failure.
+int copy_image_to_memory(VipsImage *in, VipsImage **out);
+
+// Renders in into the vips-native file at path (one sequential pass),
+// then reopens it read-only with random access. Borrows in; on success
+// stores a new reference in *out owned by the caller; the caller may
+// unlink path immediately (the open file keeps the data alive).
+// Returns non-zero on failure.
+int write_image_to_disc(VipsImage *in, const char *path, VipsImage **out);
 
 // Encode params->inputImage to the target. Both the image and the target
 // are borrowed (the caller retains ownership). Return 0 on success,
