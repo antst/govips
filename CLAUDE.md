@@ -34,3 +34,8 @@ Tracked on GitHub: https://github.com/davidbyttow/govips/issues
 
 ## Recent Changes
 - master: Added Go 1.23+ with CGo (C11) + libvips 8.14+ (system), testify (test-only)
+
+<!-- SPECKIT START -->
+For additional context about technologies to be used, project structure,
+shell commands, and other important information, read the current plan
+<!-- SPECKIT END -->
