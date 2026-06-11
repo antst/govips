@@ -98,7 +98,7 @@ buffers header data up to ~1 GB by default. To reduce this:
 - [ ] Stream-load a JPEG via `os.File` → correct dimensions
 - [ ] Stream-load a HEIC via `os.File` (seekable) → correct format
 - [ ] Stream-load via `io.Pipe` reader (non-seekable) → succeeds
-- [ ] Stream-save to `bytes.Buffer` → output matches `Export*`
+- [ ] Stream-save to `bytes.Buffer` → output byte-identical to `Export*`
 - [ ] End-to-end: HEIC reader → JPEG writer → valid output
 - [ ] Concurrent streaming loads from multiple goroutines → no races
 - [ ] `AssertNoLeaks` passes after all streaming operations

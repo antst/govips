@@ -65,12 +65,12 @@ produces.
 
 1. **Given** a loaded `ImageRef` and a `bytes.Buffer` as `io.Writer`,
    **When** `SaveToWriter(w, ImageTypeJPEG, params)` is called,
-   **Then** the buffer contains a valid JPEG and the output matches
-   `ExportJpeg` with the same params.
+   **Then** the buffer contains a valid JPEG that is byte-identical
+   to the `ExportJpeg` output with the same params.
 2. **Given** a loaded `ImageRef`, **When** `SaveToWriter` is called
    for each supported format (JPEG, PNG, WebP, HEIF, TIFF, GIF),
-   **Then** each produces valid output matching the corresponding
-   `Export*` method.
+   **Then** each produces valid output byte-identical to the
+   corresponding `Export*` method.
 3. **Given** a writer that returns an error, **When** `SaveToWriter`
    is called, **Then** the error propagates as a Go error and no
    resources are leaked.
