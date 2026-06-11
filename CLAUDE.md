@@ -28,3 +28,9 @@ Flow: worktree
 ## Issues
 
 Tracked on GitHub: https://github.com/davidbyttow/govips/issues
+
+## Active Technologies
+- Go 1.23+ with CGo (C11) + libvips 8.14+ (system), testify (test-only) (master)
+
+## Recent Changes
+- master: Added Go 1.23+ with CGo (C11) + libvips 8.14+ (system), testify (test-only)
