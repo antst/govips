@@ -31,13 +31,19 @@ func vipsGetPoint(in *C.VipsImage, n int, x int, y int) ([]float64, error) {
 	incOpCounter("getpoint")
 	var out *C.double
 
-	if err := C.getpoint(in, &out, C.int(n), C.int(x), C.int(y)); err != 0 {
+	// vips_getpoint ignores the requested n: it allocates the vector
+	// with the image's actual band count and stores that count into n.
+	// Copying the caller's guess instead used to overread the C
+	// allocation for images with fewer bands (e.g. greyscale), see
+	// issue #1.
+	cN := C.int(n)
+	if err := C.getpoint(in, &out, &cN, C.int(x), C.int(y)); err != 0 {
 		return nil, handleVipsError()
 	}
 
 	// Copy from C memory into a Go slice, then free the C allocation.
-	result := make([]float64, n)
-	copy(result, (*[4]float64)(unsafe.Pointer(out))[:n:n])
+	result := make([]float64, int(cN))
+	copy(result, unsafe.Slice((*float64)(unsafe.Pointer(out)), int(cN)))
 	gFreePointer(unsafe.Pointer(out))
 	return result, nil
 }

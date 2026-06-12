@@ -1541,6 +1541,40 @@ func TestGetPoint_RepeatedCalls(t *testing.T) {
 	}
 }
 
+// TestGetPoint_BandCounts verifies GetPoint returns one value per band
+// and never over-reads the C-allocated vector. vips_getpoint allocates
+// the result with the image's actual band count; the old binding copied
+// a fixed 3 or 4 doubles regardless, over-reading by 16 bytes for
+// 1-band (greyscale) images — a heap over-read that traps under Guard
+// Malloc and was an intermittent-crash suspect (issue #1).
+func TestGetPoint_BandCounts(t *testing.T) {
+	require.NoError(t, Startup(nil))
+
+	cases := []struct {
+		name  string
+		build func() (*ImageRef, error)
+		bands int
+	}{
+		{"grey-1band", func() (*ImageRef, error) { return Grey(16, 16, true) }, 1},
+		{"black-rgb", func() (*ImageRef, error) { return Black(16, 16) }, 1},
+		{"png-rgb", func() (*ImageRef, error) { return NewImageFromFile(resources + "png-24bit.png") }, 3},
+		{"png-rgba", func() (*ImageRef, error) { return NewImageFromFile(resources + "with_alpha.png") }, 4},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			img, err := tc.build()
+			require.NoError(t, err)
+			defer img.Close()
+
+			pt, err := img.GetPoint(1, 1)
+			require.NoError(t, err)
+			assert.Equal(t, img.Bands(), len(pt),
+				"GetPoint must return exactly one value per band")
+		})
+	}
+}
+
 // TestGetAsString_RoundTrip verifies that GetAsString correctly returns
 // string metadata. Previously, vipsImageGetAsString deferred freeCString
 // on a nil pointer (captured before the C call), leaking the allocated string.

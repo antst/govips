@@ -27,8 +27,10 @@ int find_trim(VipsImage *in, int *left, int *top, int *width, int *height,
   return code;
 }
 
-int getpoint(VipsImage *in, double **vector, int n, int x, int y) {
-  return vips_getpoint(in, vector, &n, x, y, NULL);
+// n is in/out: vips_getpoint allocates *vector with the image's band
+// count and stores that count back into *n.
+int getpoint(VipsImage *in, double **vector, int *n, int x, int y) {
+  return vips_getpoint(in, vector, n, x, y, NULL);
 }
 
 int minOp(VipsImage *in, double *out, int *x, int *y, int size) {

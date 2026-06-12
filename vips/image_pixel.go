@@ -264,7 +264,8 @@ func (r *ImageRef) FindTrim(threshold float64, backgroundColor *Color) (int, int
 }
 
 // GetPoint reads a single pixel on an image.
-// The pixel values are returned in a slice of length n.
+// The pixel values are returned in a slice whose length is the image's
+// band count (e.g. 1 for greyscale, 3 for RGB, 4 with alpha).
 func (r *ImageRef) GetPoint(x int, y int) ([]float64, error) {
 	defer runtime.KeepAlive(r)
 	n := 3
