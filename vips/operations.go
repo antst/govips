@@ -464,8 +464,12 @@ func vipsJoin(input1 *C.VipsImage, input2 *C.VipsImage, dir Direction) (*C.VipsI
 	incOpCounter("join")
 	var out *C.VipsImage
 
-	defer C.g_object_unref(C.gpointer(input1))
-	defer C.g_object_unref(C.gpointer(input2))
+	// NOTE: do NOT unref input1/input2 here. They are borrowed from the
+	// caller's ImageRefs, which own those references and unref them in
+	// Close/finalize. vips_join takes its own refs on its inputs for the
+	// lifetime of the output. Unref'ing here dropped refs we never owned,
+	// double-freeing the inputs once their ImageRefs were collected — an
+	// intermittent use-after-free in libvips cache/dispose teardown (#1).
 	if err := C.join(input1, input2, &out, C.int(dir)); err != 0 {
 		return nil, handleVipsError()
 	}

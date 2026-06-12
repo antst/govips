@@ -112,7 +112,7 @@ func TestStress_CrashHunt(t *testing.T) {
 
 			for time.Now().Before(deadline) {
 				ops.Add(1)
-				switch rng.Intn(8) {
+				switch rng.Intn(9) {
 				case 0: // heifsave threadpool (crash flavor: heif/AVIF tests)
 					if !heifSave {
 						continue
@@ -174,6 +174,24 @@ func TestStress_CrashHunt(t *testing.T) {
 					maybeClose(img)
 				case 6: // GC pressure: drive finalizers concurrently with C work
 					runtime.GC()
+				case 8: // Join: regression for the input double-unref (#1).
+					// Both images are left to finalizers; the second
+					// must not be unref'd by the binding.
+					a, err := NewImageFromBuffer(pngBuf)
+					if err != nil {
+						errs.Add(1)
+						continue
+					}
+					b, err := NewImageFromBuffer(jpgBuf)
+					if err != nil {
+						errs.Add(1)
+						a.Close()
+						continue
+					}
+					if err := a.Join(b, DirectionHorizontal); err != nil {
+						errs.Add(1)
+					}
+					maybeClose(a)
 				case 7: // multi-image ops with finalizer-managed overlays:
 					// the root cause of #1 was secondary ImageRefs being
 					// collected mid-call (missing KeepAlive)
