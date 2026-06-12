@@ -155,6 +155,74 @@ func TestStreamRegistry_HandleWraparound(t *testing.T) {
 	assert.NotNil(t, lookupSource(h2))
 }
 
+// strictSeeker fails any attempt to position beyond the end, like some
+// custom io.Seeker implementations do. The seek callback must never ask
+// it for a past-EOF position.
+type strictSeeker struct {
+	r *bytes.Reader
+}
+
+func (s *strictSeeker) Read(p []byte) (int, error) { return s.r.Read(p) }
+func (s *strictSeeker) Seek(offset int64, whence int) (int64, error) {
+	pos, err := s.r.Seek(offset, whence)
+	if err == nil && pos > s.r.Size() {
+		return 0, errors.New("strictSeeker: seek beyond EOF")
+	}
+	return pos, err
+}
+
+func TestStreamRegistry_SeekPastEOFIsPosix(t *testing.T) {
+	data := []byte("0123456789")
+	h, entry := registerSource(bytes.NewReader(data))
+	defer deregisterSource(h)
+
+	// Codecs probe past EOF (libheif box probing, see issue #3). POSIX
+	// allows it: the callback reports the requested position — libvips
+	// core range-checks it and signals the codec glue — while reads at
+	// that position return 0 bytes.
+	assert.EqualValues(t, 18, sourceSeek(h, 18, io.SeekStart), "past-EOF SEEK_SET must report the POSIX position")
+	buf := make([]byte, 4)
+	assert.EqualValues(t, 0, sourceRead(h, buf), "read past EOF must return 0 bytes")
+
+	assert.EqualValues(t, 18, sourceSeek(h, 8, io.SeekEnd), "past-EOF SEEK_END must report the POSIX position")
+
+	require.EqualValues(t, 4, sourceSeek(h, 4, io.SeekStart))
+	assert.EqualValues(t, 104, sourceSeek(h, 100, io.SeekCurrent), "past-EOF SEEK_CUR must report the POSIX position")
+
+	// Negative targets are rejected (POSIX EINVAL) without poisoning
+	// the stream error state.
+	assert.EqualValues(t, -1, sourceSeek(h, -1, io.SeekStart))
+	assert.NoError(t, entry.takeErr(), "a rejected probe seek must not become a stream error")
+
+	// Normal seeking still works afterwards.
+	assert.EqualValues(t, 2, sourceSeek(h, 2, io.SeekStart))
+	assert.EqualValues(t, 4, sourceRead(h, buf))
+}
+
+func TestStreamRegistry_SeekNeverAsksSeekerPastEOF(t *testing.T) {
+	data := []byte("0123456789")
+	h, entry := registerSource(&strictSeeker{r: bytes.NewReader(data)})
+	defer deregisterSource(h)
+
+	assert.EqualValues(t, 25, sourceSeek(h, 25, io.SeekStart),
+		"the POSIX position is reported without invoking the seeker out of range")
+	assert.NoError(t, entry.takeErr())
+}
+
+func TestLoadImageFromReader_HEICSeekProbing(t *testing.T) {
+	require.NoError(t, Startup(nil))
+
+	// libheif probes a few bytes past the final box of this fixture
+	// (issue #3): the load must succeed with no "bad seek" in sight.
+	buf, err := os.ReadFile(resources + "heic-24bit.heic")
+	require.NoError(t, err)
+
+	img, err := LoadImageFromReader(bytes.NewReader(buf), nil)
+	require.NoError(t, err)
+	defer img.Close()
+	assert.Equal(t, ImageTypeHEIF, img.Format())
+}
+
 func TestStreamRegistry_SeekWithoutSeeker(t *testing.T) {
 	h, _ := registerSource(&nonSeekable{r: bytes.NewReader([]byte("data"))})
 	defer deregisterSource(h)

@@ -31,6 +31,32 @@ type sourceEntry struct {
 	seeker  io.Seeker // non-nil only when reader implements io.Seeker
 	mu      sync.Mutex
 	lastErr error
+
+	// size is the lazily resolved length of the seekable source,
+	// cached for clamping past-EOF seek targets. Guarded by mu.
+	size      int64
+	sizeKnown bool
+}
+
+// sourceSizeLocked resolves and caches the source length without
+// disturbing the current position. The entry mutex must be held.
+func (e *sourceEntry) sourceSizeLocked() (int64, error) {
+	if e.sizeKnown {
+		return e.size, nil
+	}
+	cur, err := e.seeker.Seek(0, io.SeekCurrent)
+	if err != nil {
+		return 0, err
+	}
+	size, err := e.seeker.Seek(0, io.SeekEnd)
+	if err != nil {
+		return 0, err
+	}
+	if _, err := e.seeker.Seek(cur, io.SeekStart); err != nil {
+		return 0, err
+	}
+	e.size, e.sizeKnown = size, true
+	return size, nil
 }
 
 // targetEntry is the registry entry for one streaming save.
@@ -198,9 +224,55 @@ func sourceSeek(handle int, offset int64, whence int) int64 {
 	entry.mu.Lock()
 	defer entry.mu.Unlock()
 
-	// libvips whence values are SEEK_SET/SEEK_CUR/SEEK_END, which match
-	// io.SeekStart/io.SeekCurrent/io.SeekEnd.
-	pos, err := entry.seeker.Seek(offset, whence)
+	size, err := entry.sourceSizeLocked()
+	if err != nil {
+		entry.lastErr = err
+		return -1
+	}
+
+	// Resolve the absolute target ourselves. libvips whence values are
+	// SEEK_SET/SEEK_CUR/SEEK_END, matching io.SeekStart/Current/End.
+	var base int64
+	switch whence {
+	case io.SeekStart:
+		base = 0
+	case io.SeekCurrent:
+		cur, err := entry.seeker.Seek(0, io.SeekCurrent)
+		if err != nil {
+			entry.lastErr = err
+			return -1
+		}
+		base = cur
+	case io.SeekEnd:
+		base = size
+	default:
+		return -1
+	}
+
+	target := base + offset
+	if target < 0 {
+		// POSIX lseek rejects negative positions (EINVAL) without
+		// affecting the stream; treat it as a probe, not a stream
+		// error, so it is not wrapped into the load error later.
+		return -1
+	}
+	if target > size {
+		// POSIX permits seeking beyond EOF, and codecs probe container
+		// structures that way (libheif seeks past the final HEIC box).
+		// Report the requested position: libvips itself range-checks it
+		// against the source length and turns it into the failure the
+		// heif glue's wait_for_file_size protocol relies on. Park the
+		// underlying seeker at EOF so strict io.Seeker implementations
+		// are never asked for an out-of-range position, and any read
+		// returns 0 bytes — exactly POSIX past-EOF behavior.
+		if _, err := entry.seeker.Seek(size, io.SeekStart); err != nil {
+			entry.lastErr = err
+			return -1
+		}
+		return target
+	}
+
+	pos, err := entry.seeker.Seek(target, io.SeekStart)
 	if err != nil {
 		entry.lastErr = err
 		return -1
