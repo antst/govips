@@ -112,7 +112,7 @@ func TestStress_CrashHunt(t *testing.T) {
 
 			for time.Now().Before(deadline) {
 				ops.Add(1)
-				switch rng.Intn(7) {
+				switch rng.Intn(8) {
 				case 0: // heifsave threadpool (crash flavor: heif/AVIF tests)
 					if !heifSave {
 						continue
@@ -174,6 +174,29 @@ func TestStress_CrashHunt(t *testing.T) {
 					maybeClose(img)
 				case 6: // GC pressure: drive finalizers concurrently with C work
 					runtime.GC()
+				case 7: // multi-image ops with finalizer-managed overlays:
+					// the root cause of #1 was secondary ImageRefs being
+					// collected mid-call (missing KeepAlive)
+					img, err := NewImageFromBuffer(pngBuf)
+					if err != nil {
+						errs.Add(1)
+						continue
+					}
+					overlay, err := NewImageFromBuffer(jpgBuf)
+					if err != nil {
+						errs.Add(1)
+						img.Close()
+						continue
+					}
+					if err := overlay.AddAlpha(); err != nil {
+						errs.Add(1)
+					} else if err := img.Composite(overlay, BlendModeOver, 0, 0); err != nil {
+						errs.Add(1)
+					}
+					// Deliberately never Close the overlay: its cleanup
+					// must be safe to run from the GC finalizer even
+					// while other C calls are in flight.
+					maybeClose(img)
 				}
 			}
 		}(int64(w) + time.Now().UnixNano())
