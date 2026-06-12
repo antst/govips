@@ -51,7 +51,7 @@ func stressEnvDuration(name string, def time.Duration) time.Duration {
 }
 
 func TestStress_CrashHunt(t *testing.T) {
-	if os.Getenv("GOVIPS_STRESS") == "" {
+	if os.Getenv("GOVIPS_STRESS") != "1" {
 		t.Skip("set GOVIPS_STRESS=1 to run the crash-hunt stress harness (issue #1)")
 	}
 
