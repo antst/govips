@@ -2,6 +2,7 @@ package vips
 
 import (
 	"bytes"
+	"errors"
 	"io"
 	"os"
 	"sync"
@@ -331,6 +332,21 @@ func TestTranscodeStream_TruncatedSequential(t *testing.T) {
 	sources, targets := streamRegistrySizes()
 	assert.Zero(t, sources, "failed transcode must release the source")
 	assert.Zero(t, targets, "failed transcode must release the target")
+}
+
+func TestTranscodeStream_SequentialReaderErrorTIFF(t *testing.T) {
+	input := bigJPEG(t)
+
+	readerErr := errors.New("connection reset by peer")
+	r := &errAfterReader{data: input[:64*1024], err: readerErr}
+
+	// TIFF takes the buffer-encode fallback inside SaveToWriter; the
+	// sequential reader's error must survive that path too.
+	var w bytes.Buffer
+	err := TranscodeStream(&nonSeekable{r: r}, &w, &TranscodeOptions{Format: ImageTypeTIFF})
+	require.Error(t, err)
+	assert.True(t, errors.Is(err, readerErr),
+		"reader error must be wrapped through the TIFF fallback, got: %v", err)
 }
 
 func TestDiscBackedLoad_Truncated(t *testing.T) {

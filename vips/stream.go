@@ -536,7 +536,13 @@ func (r *ImageRef) SaveToWriter(w io.Writer, format ImageType, params *ExportPar
 		// single write; the bytes are identical to ExportTiff.
 		buf, err := vipsSaveToBuffer(saveParams)
 		if err != nil {
-			return err
+			var ioErr error
+			if r.streamSource != nil {
+				// Sequential decode runs during this encode; surface
+				// the reader's error like the streaming-target path.
+				ioErr = r.streamSource.entry.takeErr()
+			}
+			return wrapStreamError("streaming save", err, ioErr)
 		}
 		if _, err := w.Write(buf); err != nil {
 			return fmt.Errorf("streaming save: writer error: %w", err)
