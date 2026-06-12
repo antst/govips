@@ -1556,7 +1556,20 @@ func TestGetPoint_BandCounts(t *testing.T) {
 		bands int
 	}{
 		{"grey-1band", func() (*ImageRef, error) { return Grey(16, 16, true) }, 1},
-		{"black-rgb", func() (*ImageRef, error) { return Black(16, 16) }, 1},
+		{"black-1band", func() (*ImageRef, error) { return Black(16, 16) }, 1},
+		{"gray-alpha-2band", func() (*ImageRef, error) {
+			// 2 bands is the other over-read case: GetPoint guesses
+			// n=4 for any image with alpha, vs the actual 2 bands.
+			img, err := NewImageFromFile(resources + "png-8bit+alpha.png")
+			if err != nil {
+				return nil, err
+			}
+			if err := img.ToColorSpace(InterpretationBW); err != nil {
+				img.Close()
+				return nil, err
+			}
+			return img, nil
+		}, 2},
 		{"png-rgb", func() (*ImageRef, error) { return NewImageFromFile(resources + "png-24bit.png") }, 3},
 		{"png-rgba", func() (*ImageRef, error) { return NewImageFromFile(resources + "with_alpha.png") }, 4},
 	}
@@ -1566,6 +1579,8 @@ func TestGetPoint_BandCounts(t *testing.T) {
 			img, err := tc.build()
 			require.NoError(t, err)
 			defer img.Close()
+
+			require.Equal(t, tc.bands, img.Bands(), "test fixture has unexpected band count")
 
 			pt, err := img.GetPoint(1, 1)
 			require.NoError(t, err)
@@ -1878,8 +1893,8 @@ func TestRotate_AllAngles(t *testing.T) {
 	require.NoError(t, Startup(nil))
 
 	tests := []struct {
-		angle       Angle
-		swapDims    bool
+		angle    Angle
+		swapDims bool
 	}{
 		{Angle0, false},
 		{Angle90, true},
